@@ -153,13 +153,17 @@ export async function fetchAllJobs(): Promise<{ jobs: (RawJob & { id: string })[
       if (r.value.length > 0) hit++;
     }
   }
-  // Dedupe + add stable id
-  const seen = new Set<string>();
+  // Dedupe by source+id, then again by company+title (Adzuna re-posts same role under different IDs)
+  const seenIds = new Set<string>();
+  const seenTitles = new Set<string>();
   const jobs: (RawJob & { id: string })[] = [];
   for (const r of raw) {
     const id = hashId(r.source, r.source_id);
-    if (seen.has(id)) continue;
-    seen.add(id);
+    if (seenIds.has(id)) continue;
+    const titleKey = `${r.company.toLowerCase().trim()}::${r.title.toLowerCase().trim()}`;
+    if (seenTitles.has(titleKey)) continue;
+    seenIds.add(id);
+    seenTitles.add(titleKey);
     jobs.push({ ...r, id });
   }
   return { jobs, sourcesHit: hit };

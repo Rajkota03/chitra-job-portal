@@ -51,7 +51,7 @@ export async function GET(req: Request) {
 
     // Email digest of new high-match jobs
     const toNotify = newOnes
-      .filter(j => j.relevance_score >= 40)
+      .filter(j => j.relevance_score >= 30)
       .slice(0, 25) as unknown as Job[];
 
     if (toNotify.length > 0) {
