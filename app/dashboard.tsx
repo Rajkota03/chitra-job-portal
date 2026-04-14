@@ -100,16 +100,18 @@ function JobCard({ job, onUpdate, disabled }: {
            onClick={() => job.status === "new" && onUpdate(job.id, "seen")}>
           Apply →
         </a>
-        {job.status !== "applied" && (
-          <button className="btn ghost" disabled={disabled} onClick={() => onUpdate(job.id, "applied")}>
-            Mark applied
-          </button>
-        )}
-        {job.status !== "dismissed" && (
-          <button className="btn ghost" disabled={disabled} onClick={() => onUpdate(job.id, "dismissed")}>
-            Dismiss
-          </button>
-        )}
+        <div className="ghost-row">
+          {job.status !== "applied" && (
+            <button className="btn ghost" disabled={disabled} onClick={() => onUpdate(job.id, "applied")}>
+              Mark applied
+            </button>
+          )}
+          {job.status !== "dismissed" && (
+            <button className="btn ghost" disabled={disabled} onClick={() => onUpdate(job.id, "dismissed")}>
+              Dismiss
+            </button>
+          )}
+        </div>
         <span className="score">match {job.relevance_score}</span>
       </div>
     </div>
