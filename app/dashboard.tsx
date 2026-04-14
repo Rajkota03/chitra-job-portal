@@ -76,11 +76,19 @@ function JobCard({ job, onUpdate, disabled }: {
   onUpdate: (id: string, s: "new" | "seen" | "applied" | "dismissed") => void;
   disabled: boolean;
 }) {
+  const [open, setOpen] = useState(false);
   const hot = job.relevance_score >= 60;
+  const hasDescription = job.description && job.description.trim().length > 0;
+
   return (
-    <div className="card">
-      <div className="top">
-        <div style={{ flex: 1 }}>
+    <div className={`card ${open ? "open" : ""}`}>
+      <button
+        type="button"
+        className="card-head"
+        onClick={() => setOpen(o => !o)}
+        aria-expanded={open}
+      >
+        <div style={{ flex: 1, minWidth: 0 }}>
           <h3>{job.title}</h3>
           <div className="co">
             {job.company}
@@ -94,7 +102,13 @@ function JobCard({ job, onUpdate, disabled }: {
             <span className="tag">{job.source}</span>
           </div>
         </div>
-      </div>
+        <span className="chev" aria-hidden>{open ? "▾" : "▸"}</span>
+      </button>
+
+      {open && hasDescription && (
+        <div className="desc">{job.description}</div>
+      )}
+
       <div className="actions">
         <a className="btn" href={job.apply_url} target="_blank" rel="noreferrer"
            onClick={() => job.status === "new" && onUpdate(job.id, "seen")}>

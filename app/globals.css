@@ -97,6 +97,36 @@ header.hero .meta {
   transition: border-color .15s, transform .1s;
 }
 .card:active { transform: scale(0.995); }
+.card.open { border-color: #d6d3d1; }
+
+.card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 0;
+  min-height: 44px;
+}
+.card-head .chev {
+  color: #a8a29e;
+  font-size: 12px;
+  padding-top: 3px;
+  flex-shrink: 0;
+  transition: transform .15s;
+}
+
+.desc {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #f5f5f4;
+  font-size: 13px;
+  line-height: 1.55;
+  color: #44403c;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .card h3 {
   font-size: 15px;
   font-weight: 600;
