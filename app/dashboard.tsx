@@ -106,7 +106,7 @@ function JobCard({ job, onUpdate, disabled }: {
       </button>
 
       {open && hasDescription && (
-        <div className="desc">{job.description}</div>
+        <div className="desc">{cleanDescription(job.description!)}</div>
       )}
 
       <div className="actions">
@@ -130,6 +130,16 @@ function JobCard({ job, onUpdate, disabled }: {
       </div>
     </div>
   );
+}
+
+function cleanDescription(s: string): string {
+  return s
+    .replace(/&lt;/gi, "<").replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"').replace(/&#39;/gi, "'").replace(/&#x27;/gi, "'")
+    .replace(/&amp;/gi, "&").replace(/&nbsp;/gi, " ")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function timeAgo(iso: string): string {

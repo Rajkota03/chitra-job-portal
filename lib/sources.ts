@@ -140,7 +140,17 @@ async function fetchLever(): Promise<RawJob[]> {
 }
 
 function stripHtml(s: string): string {
-  return s.replace(/<[^>]*>/g, " ").replace(/&nbsp;/g, " ").replace(/\s+/g, " ").trim();
+  return s
+    // Decode encoded angle brackets & quotes (Greenhouse double-encodes)
+    .replace(/&lt;/gi, "<").replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"').replace(/&#39;/gi, "'").replace(/&#x27;/gi, "'")
+    .replace(/&amp;/gi, "&")
+    .replace(/&nbsp;/gi, " ")
+    // Strip actual tags
+    .replace(/<[^>]*>/g, " ")
+    // Collapse whitespace
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 export async function fetchAllJobs(): Promise<{ jobs: (RawJob & { id: string })[]; sourcesHit: number }> {
