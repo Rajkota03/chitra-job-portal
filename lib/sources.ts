@@ -153,8 +153,105 @@ function stripHtml(s: string): string {
     .trim();
 }
 
+// ---------- Workday (generic, tenant-configured) ----------
+// Each company has a Career Experience Service (CXS) endpoint. Verified live as of build:
+const WORKDAY_TENANTS = [
+  { name: "Wells Fargo",    cxs: "https://wd1.myworkdaysite.com/wday/cxs/wf/WellsFargoJobs/jobs",              apply: "https://wd1.myworkdaysite.com/en-US/recruiting/wf/WellsFargoJobs" },
+  { name: "PwC",            cxs: "https://pwc.wd3.myworkdayjobs.com/wday/cxs/pwc/Global_Experienced_Careers/jobs", apply: "https://pwc.wd3.myworkdayjobs.com/en-US/Global_Experienced_Careers" },
+  { name: "Citi",           cxs: "https://citi.wd5.myworkdayjobs.com/wday/cxs/citi/2/jobs",                    apply: "https://citi.wd5.myworkdayjobs.com/en-US/2" },
+  { name: "Accenture",      cxs: "https://accenture.wd103.myworkdayjobs.com/wday/cxs/accenture/AccentureCareers/jobs", apply: "https://accenture.wd103.myworkdayjobs.com/en-US/AccentureCareers" },
+  { name: "Salesforce",     cxs: "https://salesforce.wd12.myworkdayjobs.com/wday/cxs/salesforce/External_Career_Site/jobs", apply: "https://salesforce.wd12.myworkdayjobs.com/en-US/External_Career_Site" },
+  { name: "Morgan Stanley", cxs: "https://ms.wd5.myworkdayjobs.com/wday/cxs/ms/External/jobs",                 apply: "https://ms.wd5.myworkdayjobs.com/en-US/External" },
+];
+
+async function fetchWorkday(): Promise<RawJob[]> {
+  const out: RawJob[] = [];
+  for (const t of WORKDAY_TENANTS) {
+    // Run a couple of high-signal queries per tenant to keep request count bounded
+    for (const q of ["fraud", "risk", "audit", "compliance"]) {
+      try {
+        const res = await fetch(t.cxs, {
+          method: "POST",
+          headers: { "content-type": "application/json", accept: "application/json" },
+          body: JSON.stringify({ appliedFacets: {}, limit: 20, offset: 0, searchText: q }),
+          cache: "no-store",
+        });
+        if (!res.ok) continue;
+        const data = await res.json();
+        for (const j of data.jobPostings ?? []) {
+          const title = j.title ?? "";
+          const loc = j.locationsText ?? "";
+          // Pre-filter: India/Hyderabad focus + senior-ish risk/audit/fraud
+          const locOk = /hyderabad|bangalore|bengaluru|mumbai|pune|gurgaon|gurugram|delhi|noida|chennai|india/i.test(loc);
+          const titleOk = /risk|audit|fraud|compliance|control|aml|kyc|financial crime|accountability|sox/i.test(title);
+          if (!locOk || !titleOk) continue;
+          out.push({
+            source: "workday",
+            source_id: `${t.name}:${j.externalPath ?? title}`,
+            title,
+            company: t.name,
+            location: loc || null,
+            work_mode: detectWorkMode(`${title} ${loc}`),
+            salary: null,
+            description: null, // Workday CXS requires a 2nd call per job; skip to keep latency down
+            apply_url: `${t.apply}${j.externalPath ?? ""}`,
+            posted_at: parseWorkdayPostedOn(j.postedOn),
+          });
+        }
+      } catch {
+        // skip
+      }
+    }
+  }
+  return out;
+}
+
+function parseWorkdayPostedOn(s: string | undefined): string | null {
+  // Workday returns strings like "Posted Yesterday", "Posted 3 Days Ago", "Posted 30+ Days Ago"
+  if (!s) return null;
+  const now = Date.now();
+  if (/yesterday/i.test(s)) return new Date(now - 86400_000).toISOString();
+  if (/today/i.test(s)) return new Date(now).toISOString();
+  const m = s.match(/(\d+)\+?\s*days?/i);
+  if (m) return new Date(now - parseInt(m[1]) * 86400_000).toISOString();
+  return null;
+}
+
+// ---------- Amazon.jobs (proprietary public search API) ----------
+async function fetchAmazon(): Promise<RawJob[]> {
+  const out: RawJob[] = [];
+  for (const q of ["fraud", "risk control", "audit", "compliance"]) {
+    try {
+      const url = `https://www.amazon.jobs/en/search.json?base_query=${encodeURIComponent(q)}&loc_query=Hyderabad%2C%20India&result_limit=25&sort=recent`;
+      const res = await fetch(url, { cache: "no-store" });
+      if (!res.ok) continue;
+      const data = await res.json();
+      for (const j of data.jobs ?? []) {
+        const title = j.title ?? "";
+        const titleOk = /risk|audit|fraud|compliance|control|investigator|aml|kyc|financial crime|sox/i.test(title);
+        if (!titleOk) continue;
+        out.push({
+          source: "amazon",
+          source_id: String(j.id_icims ?? j.id ?? j.job_path ?? title),
+          title,
+          company: "Amazon",
+          location: [j.city, j.country].filter(Boolean).join(", ") || null,
+          work_mode: "unknown",
+          salary: null,
+          description: (j.description_short ?? j.basic_qualifications ?? "").slice(0, 1000) || null,
+          apply_url: `https://www.amazon.jobs${j.job_path ?? ""}`,
+          posted_at: j.posted_date ? new Date(j.posted_date).toISOString() : null,
+        });
+      }
+    } catch {
+      // skip
+    }
+  }
+  return out;
+}
+
 export async function fetchAllJobs(): Promise<{ jobs: (RawJob & { id: string })[]; sourcesHit: number }> {
-  const results = await Promise.allSettled([fetchAdzuna(), fetchGreenhouse(), fetchLever()]);
+  const results = await Promise.allSettled([fetchAdzuna(), fetchGreenhouse(), fetchLever(), fetchWorkday(), fetchAmazon()]);
   const raw: RawJob[] = [];
   let hit = 0;
   for (const r of results) {

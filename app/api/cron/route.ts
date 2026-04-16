@@ -49,14 +49,25 @@ export async function GET(req: Request) {
       if (error) throw new Error(error.message);
     }
 
-    // Email digest of new high-match jobs
+    // Email digest of new high-match jobs + any pending follow-ups
     const toNotify = newOnes
       .filter(j => j.relevance_score >= 30)
       .slice(0, 25) as unknown as Job[];
 
-    if (toNotify.length > 0) {
-      const { sent } = await sendDigest(toNotify);
-      if (sent) {
+    // Follow-up section: applied 3+ days ago, not yet followed up
+    const threeDaysAgo = new Date(Date.now() - 3 * 86400_000).toISOString();
+    const { data: followUps } = await sb
+      .from("jobs")
+      .select("*")
+      .eq("status", "applied")
+      .is("followed_up_at", null)
+      .lte("applied_at", threeDaysAgo)
+      .order("applied_at", { ascending: true })
+      .limit(15);
+
+    if (toNotify.length > 0 || (followUps && followUps.length > 0)) {
+      const { sent } = await sendDigest(toNotify, (followUps ?? []) as Job[]);
+      if (sent && toNotify.length > 0) {
         log.notified = toNotify.length;
         await sb.from("jobs").update({ notified: true }).in("id", toNotify.map(j => j.id));
       }

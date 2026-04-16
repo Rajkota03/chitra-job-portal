@@ -7,35 +7,45 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   const status = url.searchParams.get("status") ?? "new";
   const sb = adminClient();
-  const { data, error } = await sb
-    .from("jobs")
+
+  const q = sb.from("jobs")
     .select("*")
-    .eq("status", status === "all" ? "status" : status) // "all" will match nothing; handled below
     .order("relevance_score", { ascending: false })
     .order("found_at", { ascending: false })
-    .limit(200);
+    .limit(300);
 
-  if (status === "all") {
-    const { data: all, error: e2 } = await sb
-      .from("jobs").select("*")
-      .order("relevance_score", { ascending: false })
-      .order("found_at", { ascending: false })
-      .limit(200);
-    if (e2) return NextResponse.json({ error: e2.message }, { status: 500 });
-    return NextResponse.json({ jobs: all });
-  }
-
+  const { data, error } = status === "all" ? await q : await q.eq("status", status);
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ jobs: data });
 }
 
 export async function PATCH(req: Request) {
-  const { id, status } = await req.json();
-  if (!id || !["new", "seen", "applied", "dismissed"].includes(status)) {
-    return NextResponse.json({ error: "bad input" }, { status: 400 });
-  }
+  const { id, status, followedUp } = await req.json();
+
   const sb = adminClient();
-  const { error } = await sb.from("jobs").update({ status }).eq("id", id);
+  const patch: Record<string, unknown> = {};
+
+  if (status) {
+    if (!["new", "seen", "applied", "dismissed"].includes(status)) {
+      return NextResponse.json({ error: "bad status" }, { status: 400 });
+    }
+    patch.status = status;
+    // First time marking applied → stamp applied_at. Don't overwrite if already set.
+    if (status === "applied") {
+      const { data: existing } = await sb.from("jobs").select("applied_at").eq("id", id).single();
+      if (!existing?.applied_at) patch.applied_at = new Date().toISOString();
+    }
+  }
+
+  if (followedUp === true) {
+    patch.followed_up_at = new Date().toISOString();
+  }
+
+  if (Object.keys(patch).length === 0) {
+    return NextResponse.json({ error: "nothing to update" }, { status: 400 });
+  }
+
+  const { error } = await sb.from("jobs").update(patch).eq("id", id);
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ ok: true });
 }
