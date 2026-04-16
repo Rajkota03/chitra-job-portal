@@ -164,46 +164,116 @@ const WORKDAY_TENANTS = [
   { name: "Morgan Stanley", cxs: "https://ms.wd5.myworkdayjobs.com/wday/cxs/ms/External/jobs",                 apply: "https://ms.wd5.myworkdayjobs.com/en-US/External" },
 ];
 
-async function fetchWorkday(): Promise<RawJob[]> {
-  const out: RawJob[] = [];
-  for (const t of WORKDAY_TENANTS) {
-    // Run a couple of high-signal queries per tenant to keep request count bounded
-    for (const q of ["fraud", "risk", "audit", "compliance"]) {
-      try {
-        const res = await fetch(t.cxs, {
-          method: "POST",
-          headers: { "content-type": "application/json", accept: "application/json" },
-          body: JSON.stringify({ appliedFacets: {}, limit: 20, offset: 0, searchText: q }),
-          cache: "no-store",
-        });
-        if (!res.ok) continue;
-        const data = await res.json();
-        for (const j of data.jobPostings ?? []) {
-          const title = j.title ?? "";
-          const loc = j.locationsText ?? "";
-          // Pre-filter: India/Hyderabad focus + senior-ish risk/audit/fraud
-          const locOk = /hyderabad|bangalore|bengaluru|mumbai|pune|gurgaon|gurugram|delhi|noida|chennai|india/i.test(loc);
-          const titleOk = /risk|audit|fraud|compliance|control|aml|kyc|financial crime|accountability|sox/i.test(title);
-          if (!locOk || !titleOk) continue;
-          out.push({
-            source: "workday",
-            source_id: `${t.name}:${j.externalPath ?? title}`,
-            title,
-            company: t.name,
-            location: loc || null,
-            work_mode: detectWorkMode(`${title} ${loc}`),
-            salary: null,
-            description: null, // Workday CXS requires a 2nd call per job; skip to keep latency down
-            apply_url: `${t.apply}${j.externalPath ?? ""}`,
-            posted_at: parseWorkdayPostedOn(j.postedOn),
-          });
-        }
-      } catch {
-        // skip
-      }
+type WorkdayTenant = typeof WORKDAY_TENANTS[number];
+
+async function fetchWorkdayTenant(t: WorkdayTenant): Promise<RawJob[]> {
+  type Pending = { job: RawJob; externalPath: string };
+  const pending: Pending[] = [];
+  const seenPaths = new Set<string>();
+
+  // Fan queries out in parallel — Workday CXS handles concurrent requests fine.
+  const searchResults = await Promise.allSettled(
+    ["fraud", "risk", "audit", "compliance"].map(q =>
+      fetch(t.cxs, {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({ appliedFacets: {}, limit: 20, offset: 0, searchText: q }),
+        cache: "no-store",
+      }).then(r => (r.ok ? r.json() : null))
+    )
+  );
+
+  for (const r of searchResults) {
+    if (r.status !== "fulfilled" || !r.value) continue;
+    for (const j of r.value.jobPostings ?? []) {
+      const title = j.title ?? "";
+      const loc = j.locationsText ?? "";
+      const externalPath = j.externalPath ?? "";
+      const locOk = /hyderabad|bangalore|bengaluru|mumbai|pune|gurgaon|gurugram|delhi|noida|chennai|india/i.test(loc);
+      const titleOk = /risk|audit|fraud|compliance|control|aml|kyc|financial crime|accountability|sox/i.test(title);
+      if (!locOk || !titleOk) continue;
+      if (externalPath && seenPaths.has(externalPath)) continue;
+      if (externalPath) seenPaths.add(externalPath);
+      pending.push({
+        externalPath,
+        job: {
+          source: "workday",
+          source_id: `${t.name}:${externalPath || title}`,
+          title,
+          company: t.name,
+          location: loc || null,
+          work_mode: detectWorkMode(`${title} ${loc}`),
+          salary: null,
+          description: null,
+          apply_url: `${t.apply}${externalPath}`,
+          posted_at: parseWorkdayPostedOn(j.postedOn),
+        },
+      });
     }
   }
+
+  // externalPath already starts with "/job/...", so just append to the tenant root.
+  const detailBase = t.cxs.replace(/\/jobs$/, "");
+  return Promise.all(
+    pending.map(async p => {
+      if (!p.externalPath) return p.job;
+      const desc = await fetchWorkdayDetail(`${detailBase}${p.externalPath}`);
+      return desc
+        ? { ...p.job, description: desc, work_mode: detectWorkMode(`${p.job.title} ${p.job.location ?? ""} ${desc}`) }
+        : p.job;
+    })
+  );
+}
+
+async function fetchWorkday(): Promise<RawJob[]> {
+  // Run all tenants in parallel — cuts wall time from ~(tenants × queries × rtt) to max(tenant).
+  const results = await Promise.allSettled(WORKDAY_TENANTS.map(fetchWorkdayTenant));
+  const out: RawJob[] = [];
+  for (const r of results) if (r.status === "fulfilled") out.push(...r.value);
   return out;
+}
+
+// Given rows like { id, source_id: "WellsFargo:/job/..." }, fetch each description
+// in parallel and return {id, description} for the ones that resolved.
+// Used by the cron to heal older rows that were inserted before descriptions were fetched.
+export async function backfillWorkdayDescriptions(
+  rows: { id: string; source_id: string }[]
+): Promise<{ id: string; description: string }[]> {
+  const tenantsByName = new Map(WORKDAY_TENANTS.map(t => [t.name, t]));
+  const results = await Promise.all(
+    rows.map(async r => {
+      const sep = r.source_id.indexOf(":");
+      if (sep === -1) return null;
+      const tenantName = r.source_id.slice(0, sep);
+      const externalPath = r.source_id.slice(sep + 1);
+      const t = tenantsByName.get(tenantName);
+      if (!t || !externalPath.startsWith("/job/")) return null;
+      const detailBase = t.cxs.replace(/\/jobs$/, "");
+      const desc = await fetchWorkdayDetail(`${detailBase}${externalPath}`);
+      return desc ? { id: r.id, description: desc } : null;
+    })
+  );
+  return results.filter((x): x is { id: string; description: string } => x !== null);
+}
+
+async function fetchWorkdayDetail(url: string): Promise<string | null> {
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 5000);
+    const res = await fetch(url, {
+      cache: "no-store",
+      signal: ctrl.signal,
+      headers: { accept: "application/json" },
+    });
+    clearTimeout(timer);
+    if (!res.ok) return null;
+    const data = await res.json();
+    const html: string = data?.jobPostingInfo?.jobDescription ?? "";
+    if (!html) return null;
+    return stripHtml(html).slice(0, 2000);
+  } catch {
+    return null;
+  }
 }
 
 function parseWorkdayPostedOn(s: string | undefined): string | null {

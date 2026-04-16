@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { adminClient } from "@/lib/supabase";
-import { fetchAllJobs } from "@/lib/sources";
+import { fetchAllJobs, backfillWorkdayDescriptions } from "@/lib/sources";
 import { scoreJob } from "@/lib/matcher";
 import { sendDigest } from "@/lib/email";
 import type { Job } from "@/lib/types";
@@ -47,6 +47,25 @@ export async function GET(req: Request) {
     if (newOnes.length > 0) {
       const { error } = await sb.from("jobs").insert(newOnes);
       if (error) throw new Error(error.message);
+    }
+
+    // Self-healing backfill: enrich up to 25 older Workday rows per run with missing descriptions.
+    // Cheap (runs while Adzuna/etc. requests are already cached) and heals the DB over a few cron cycles.
+    try {
+      const { data: missing } = await sb
+        .from("jobs")
+        .select("id, source_id")
+        .eq("source", "workday")
+        .is("description", null)
+        .limit(25);
+      if (missing && missing.length > 0) {
+        const patches = await backfillWorkdayDescriptions(missing);
+        for (const p of patches) {
+          await sb.from("jobs").update({ description: p.description }).eq("id", p.id);
+        }
+      }
+    } catch {
+      // non-fatal — next run retries
     }
 
     // Email digest of new high-match jobs + any pending follow-ups
